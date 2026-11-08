@@ -1,0 +1,10 @@
+flask
+vosk
+sounddevice
+numpy
+python-dotenv
+requests
+google-genai
+pyserial
+pronouncing
+tzdata; sys_platform == "win32"

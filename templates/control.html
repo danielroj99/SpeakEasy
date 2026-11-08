@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SpeakEasy · Control</title>
+<style>
+  :root { --bg:#0b0c10; --card:#13151b; --line:#232631; --ink:#f2efe8; --dim:#8d8c87;
+          --fresh:#2bd47d; --tiring:#ffa62b; --recap:#a46bff; --bad:#ff5d5d; --accent:var(--fresh); }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 "Segoe UI Variable Text","Segoe UI",Inter,system-ui,sans-serif; }
+  header { display:flex; align-items:center; justify-content:space-between; padding:20px 28px; border-bottom:1px solid var(--line); }
+  .brand { display:flex; gap:12px; align-items:center; font-size:18px; }
+  .mark { width:30px; height:30px; border-radius:9px; background:var(--accent); display:grid; place-items:center; color:#0b0c10; font-weight:800; transition:background .6s; }
+  .chips { display:flex; gap:10px; flex-wrap:wrap; }
+  .chip { display:flex; gap:8px; align-items:center; padding:6px 12px; border:1px solid var(--line); border-radius:999px; color:var(--dim); font-size:13px; }
+  .chip i { width:8px; height:8px; border-radius:50%; background:#555; }
+  .chip.ok i { background:var(--fresh); } .chip.ok { color:var(--ink); }
+  .chip.bad i { background:var(--bad); }
+  a.chip { text-decoration:none; color:var(--ink); }
+  main { display:grid; grid-template-columns:repeat(12,1fr); gap:18px; padding:22px 28px 40px; max-width:1500px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px; }
+  .card h2 { margin:0 0 14px; font-size:13px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); font-weight:600; }
+  .s4 { grid-column:span 4; } .s5 { grid-column:span 5; } .s7 { grid-column:span 7; } .s8 { grid-column:span 8; } .s12 { grid-column:span 12; }
+  @media (max-width:1000px){ .s4,.s5,.s7,.s8 { grid-column:span 12; } }
+  .big { font-size:30px; font-weight:600; display:flex; align-items:center; gap:12px; }
+  .big i { width:14px; height:14px; border-radius:50%; background:var(--accent); transition:background .6s; }
+  .bar { height:10px; background:#1c1f28; border-radius:6px; overflow:hidden; margin:14px 0 6px; }
+  .bar > div { height:100%; width:0; background:var(--accent); transition:width .6s, background .6s; }
+  .row { display:flex; justify-content:space-between; color:var(--dim); font-size:13px; }
+  .pad { margin-top:18px; display:flex; align-items:center; gap:14px; padding:14px; border:1px dashed var(--line); border-radius:12px; }
+  .padicon { width:46px; height:46px; border-radius:50%; border:2px solid var(--line); display:grid; place-items:center; color:var(--dim); font-size:12px; transition:all .2s; }
+  .padicon.flash { border-color:var(--accent); color:var(--ink); transform:scale(1.12); box-shadow:0 0 0 8px color-mix(in srgb,var(--accent) 18%,transparent); }
+  .ring { position:relative; width:150px; height:150px; flex:none; }
+  .ring svg { transform:rotate(-90deg); }
+  .ring .num { position:absolute; inset:0; display:grid; place-items:center; text-align:center; font-size:28px; font-weight:600; }
+  .ring .num small { display:block; font-size:12px; color:var(--dim); font-weight:400; }
+  .vb { display:flex; gap:22px; align-items:center; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-size:14px; }
+  .kv span:nth-child(odd) { color:var(--dim); }
+  .btns { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
+  button { font:inherit; padding:10px 14px; border-radius:10px; border:1px solid var(--line); background:#1a1d25; color:var(--ink); cursor:pointer; }
+  button:hover { border-color:#3a3e4c; } button:disabled { opacity:.4; cursor:not-allowed; }
+  button.primary { background:var(--ink); color:#0b0c10; border-color:var(--ink); font-weight:600; }
+  button.warn { border-color:#4a2a2a; color:#ffb4b4; }
+  input { font:inherit; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0e1015; color:var(--ink); min-width:0; flex:1; }
+  .recaptext { font-size:17px; line-height:1.55; min-height:80px; color:var(--ink); }
+  .muted { color:var(--dim); }
+  #feed { max-height:260px; overflow:auto; font-size:15px; }
+  #feed p { margin:0; padding:8px 0; border-bottom:1px solid #1a1c23; }
+  #feed time { color:var(--dim); font-size:12px; margin-right:10px; font-variant-numeric:tabular-nums; }
+  .err { color:#ff9b9b; font-size:13px; margin-top:8px; min-height:18px; }
+  dialog { background:var(--card); color:var(--ink); border:1px solid var(--line); border-radius:16px; padding:22px; width:min(440px,90vw); }
+  dialog::backdrop { background:rgba(0,0,0,.6); }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="mark">S</div><b>SpeakEasy</b><span class="muted">control panel</span></div>
+  <div class="chips">
+    <span class="chip" id="chipArduino"><i></i>Armband</span>
+    <span class="chip" id="chipMic"><i></i>Mic</span>
+    <span class="chip" id="chipVoice"><i></i>Voice</span>
+    <a class="chip" href="/" target="_blank">Open captions screen ↗</a>
+  </div>
+</header>
+<main>
+  <section class="card s4">
+    <h2>Live voice</h2>
+    <div class="big"><i></i><span id="stateLabel">Fresh</span></div>
+    <div class="bar"><div id="fbar"></div></div>
+    <div class="row"><span>Fatigue <b id="fval">0.00</b></span><span id="mline">waiting for a full minute of speech</span></div>
+    <div class="pad"><div class="padicon" id="padicon">PAD</div>
+      <div><div id="padlast">No touch yet</div><div class="muted" style="font-size:13px">Tap: captions on/off · Hold: recap</div></div></div>
+    <div class="row" style="margin-top:10px"><span>Captions</span><b id="cc">On</b></div>
+  </section>
+
+  <section class="card s8">
+    <h2>Voice bank</h2>
+    <div class="vb">
+      <div class="ring">
+        <svg width="150" height="150"><circle cx="75" cy="75" r="64" stroke="#1c1f28" stroke-width="12" fill="none"/>
+          <circle id="arc" cx="75" cy="75" r="64" stroke="var(--recap)" stroke-width="12" fill="none" stroke-linecap="round" stroke-dasharray="402" stroke-dashoffset="402" style="transition:stroke-dashoffset .6s"/></svg>
+        <div class="num"><div><span id="secs">0</span>s<small>of <span id="target">90</span>s clean speech</small></div></div>
+      </div>
+      <div style="flex:1">
+        <div class="kv">
+          <span>Speaker</span><b id="speaker">-</b>
+          <span>Clips</span><span id="clips">0</span>
+          <span>Recording</span><span id="rec">-</span>
+          <span>Recap voice</span><span id="voice">default voice</span>
+        </div>
+        <div class="btns">
+          <button id="btnRec" onclick="toggleRec()">Pause recording</button>
+          <button class="primary" id="btnClone" onclick="clone()">Create voice clone</button>
+          <button class="warn" onclick="document.getElementById('dlg').showModal()">New speaker</button>
+        </div>
+        <div class="err" id="vbErr"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card s7">
+    <h2>Recap</h2>
+    <div class="recaptext" id="recapText"><span class="muted">Hold the pad (or press Play recap) after a few minutes of talking.</span></div>
+    <div class="row" style="margin-top:8px"><span id="recapPhase">idle</span></div>
+    <div class="btns">
+      <button class="primary" onclick="post('/debug/hold')">Play recap</button>
+      <input id="rt" placeholder="Or type a line to say in the cloned voice">
+      <button onclick="post('/debug/recap_text',{text:val('rt')})">Say it</button>
+    </div>
+  </section>
+
+  <section class="card s5">
+    <h2>Demo controls</h2>
+    <div class="btns" style="margin-top:0">
+      <button onclick="post('/debug/fatigue?level=0.1')">Fresh</button>
+      <button onclick="post('/debug/fatigue?level=0.5')">Tiring</button>
+      <button onclick="post('/debug/fatigue?level=0.85')">Recap ready</button>
+      <button onclick="post('/debug/tap')">Tap pad</button>
+      <button class="warn" onclick="post('/debug/reset')">Reset session</button>
+    </div>
+    <p class="muted" style="font-size:13px;margin:14px 0 0">These fake the armband and fatigue score so every demo step fires on cue.</p>
+  </section>
+
+  <section class="card s12">
+    <h2>Transcript</h2>
+    <div id="feed"><p class="muted">Nothing yet.</p></div>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <h3 style="margin-top:0">Start a new speaker?</h3>
+  <p class="muted">The current recordings are archived (not deleted) and recording starts fresh for this person. Recaps use the default voice until you create their clone.</p>
+  <div class="btns"><input id="newName" placeholder="Name, e.g. Alex"></div>
+  <div class="btns"><button onclick="dlg.close()">Cancel</button><button class="primary" onclick="newSpeaker()">Start recording</button></div>
+</dialog>
+
+<script>
+const $ = id => document.getElementById(id), val = id => $(id).value;
+const dlg = $("dlg");
+const STATES = { fresh:["Fresh","--fresh"], tiring:["Tiring","--tiring"], recap_ready:["Recap ready","--recap"] };
+let bank = null, lastAudio = 0;
+async function post(url, body){
+  const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body: body ? JSON.stringify(body) : null});
+  return r.json().catch(() => ({}));
+}
+function setState(s){ const [l,v]=STATES[s]||STATES.fresh; document.documentElement.style.setProperty("--accent",`var(${v})`); $("stateLabel").textContent=l; }
+function setFatigue(f){ f=f||0; $("fbar").style.width=Math.min(100,f*100)+"%"; $("fval").textContent=f.toFixed(2); }
+function chip(id, ok, text){ const c=$(id); c.classList.toggle("ok", ok===true); c.classList.toggle("bad", ok===false); c.lastChild.textContent=text; }
+function setBank(b){
+  if(!b) return; bank=b;
+  $("secs").textContent=Math.round(b.seconds); $("target").textContent=b.target; $("clips").textContent=b.clips; $("speaker").textContent=b.speaker;
+  $("arc").style.strokeDashoffset = 402*(1-Math.min(1,b.seconds/b.target));
+  $("rec").textContent = !b.enabled ? "Paused" : (b.paused_reason ? "On, "+b.paused_reason : "Listening for clean speech");
+  $("btnRec").textContent = b.enabled ? "Pause recording" : "Resume recording";
+  $("btnClone").disabled = b.seconds < 10 || b.phase==="uploading";
+  $("btnClone").textContent = b.phase==="uploading" ? "Cloning…" : (b.voice_id ? "Re-create clone" : "Create voice clone");
+  $("voice").textContent = b.voice_id ? `${b.speaker}'s clone` : "default voice (no clone yet)";
+  chip("chipVoice", b.voice_id ? true : null, b.voice_id ? `Voice: ${b.speaker}` : "Voice: default");
+  $("vbErr").textContent = b.phase==="error" ? b.error : (b.phase==="ready" ? "Clone ready. Recaps now use this voice." : "");
+}
+async function toggleRec(){ setBank((await post("/api/voicebank/record",{on:!(bank&&bank.enabled)})).bank); }
+async function clone(){ const r=await post("/api/voicebank/clone"); if(r.error) $("vbErr").textContent=r.error; }
+async function newSpeaker(){ const r=await post("/api/voicebank/new",{name:val("newName")||"Speaker"}); dlg.close(); setBank(r.bank); }
+function addFeed(t, ts){
+  const f=$("feed"); if(f.firstChild && f.firstChild.classList && f.firstChild.classList.contains("muted")) f.innerHTML="";
+  const p=document.createElement("p"); const d=ts? new Date(ts*1000):new Date();
+  p.innerHTML=`<time>${d.toLocaleTimeString([], {hour:"numeric",minute:"2-digit",second:"2-digit"})}</time>`; p.append(t);
+  f.prepend(p); while(f.children.length>40) f.lastChild.remove();
+}
+function padFlash(kind, source){
+  const i=$("padicon"); i.textContent=kind==="hold"?"HOLD":"TAP"; i.classList.add("flash"); setTimeout(()=>{i.classList.remove("flash"); i.textContent="PAD";},700);
+  $("padlast").textContent=`${kind==="hold"?"Hold":"Tap"} from ${source==="pad"?"armband":"panel"} at ${new Date().toLocaleTimeString([], {hour:"numeric",minute:"2-digit",second:"2-digit"})}`;
+}
+setInterval(()=>chip("chipMic", Date.now()-lastAudio<15000 ? true : null, Date.now()-lastAudio<15000 ? "Mic: hearing speech" : "Mic: quiet"), 1000);
+
+const es=new EventSource("/stream");
+es.onerror=()=>chip("chipArduino", false, "Server offline");
+es.addEventListener("hello", e=>{ const s=JSON.parse(e.data); setState(s.state); setFatigue(s.fatigue); setBank(s.bank);
+  chip("chipArduino", s.arduino, s.arduino ? "Armband connected" : "Armband not found");
+  $("cc").textContent=s.captions_on?"On":"Off"; (s.transcript||[]).forEach(x=>addFeed(x.text,x.t)); });
+es.addEventListener("hub", e=>{ const d=JSON.parse(e.data); chip("chipArduino", d.connected, d.connected?"Armband connected":"Armband not found"); });
+es.addEventListener("partial", ()=>{ lastAudio=Date.now(); });
+es.addEventListener("final", e=>{ lastAudio=Date.now(); const d=JSON.parse(e.data); if(d.text) addFeed(d.text,d.t); });
+es.addEventListener("state", e=>setState(JSON.parse(e.data).state));
+es.addEventListener("metrics", e=>{ const m=JSON.parse(e.data); setFatigue(m.fatigue);
+  $("mline").textContent = !m.wpm ? "demo value" : (m.baseline_wpm
+    ? `${Math.round(m.wpm)} wpm (baseline ${Math.round(m.baseline_wpm)}) · conf ${(m.mean_conf||0).toFixed(2)}`
+    : `learning baseline · ${Math.round(m.wpm)} wpm`); });
+es.addEventListener("captions", e=>{ $("cc").textContent=JSON.parse(e.data).on?"On":"Off"; });
+es.addEventListener("touch", e=>{ const d=JSON.parse(e.data); padFlash(d.kind, d.source); });
+es.addEventListener("bank", e=>setBank(JSON.parse(e.data)));
+es.addEventListener("recap", e=>{ const d=JSON.parse(e.data); $("recapPhase").textContent=d.phase;
+  if(d.text && d.phase!=="error") $("recapText").textContent=d.text; if(d.phase==="error") $("recapPhase").textContent="error: "+d.text; });
+es.addEventListener("reset", ()=>{ $("feed").innerHTML='<p class="muted">Nothing yet.</p>'; setFatigue(0); });
+</script>
+</body>
+</html>

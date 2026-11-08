@@ -1,0 +1,13 @@
+.env
+bank/
+__pycache__/
+.venv/
+vosk-model-*/
+*.mp3
+baseline.json
+finals.jsonl
+bank_archive/
+*.wav
+*.db
+*.db-wal
+*.db-shm

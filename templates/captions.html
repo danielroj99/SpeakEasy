@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SpeakEasy · Live captions</title>
+<style>
+  :root { --bg:#0a0b0f; --ink:#f4f1ea; --dim:#8b8a86; --line:#1d1f26;
+          --fresh:#2bd47d; --tiring:#ffa62b; --recap:#a46bff; --accent:var(--fresh); }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+    font-family:"Segoe UI Variable Display","Segoe UI",Inter,system-ui,sans-serif; overflow:hidden; }
+  #meter { position:fixed; top:0; left:0; height:4px; width:8%; background:var(--accent);
+    transition:width .8s ease, background .8s ease; }
+  header { position:fixed; top:0; left:0; right:0; display:flex; align-items:center; justify-content:space-between;
+    padding:28px 5vw 0; font-size:20px; color:var(--dim); }
+  .brand { display:flex; align-items:center; gap:12px; letter-spacing:.02em; }
+  .brand b { color:var(--ink); font-weight:600; font-size:22px; }
+  .mark { width:28px; height:28px; border-radius:8px; background:var(--accent); transition:background .8s;
+    display:grid; place-items:center; color:#0a0b0f; font-weight:800; font-size:15px; }
+  .pill { display:flex; align-items:center; gap:10px; padding:10px 18px; border:1px solid var(--line);
+    border-radius:999px; color:var(--ink); font-size:19px; background:#111319; }
+  .dot { width:12px; height:12px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 0 var(--accent);
+    animation:pulse 2.4s infinite; transition:background .8s; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 60%,transparent)} 70%{box-shadow:0 0 0 12px transparent} 100%{box-shadow:0 0 0 0 transparent} }
+  .right { display:flex; gap:22px; align-items:center; }
+  #stage { position:absolute; inset:0; display:flex; flex-direction:column; justify-content:flex-end;
+    padding:0 6vw 11vh; transition:opacity .5s; }
+  .line { font-size:clamp(40px,4.6vw,84px); line-height:1.18; font-weight:500; margin:0 0 .28em;
+    letter-spacing:-.01em; animation:rise .35s ease; }
+  .line.old2 { color:#55554f; font-size:clamp(28px,3vw,54px); }
+  .line.old1 { color:#a9a69e; font-size:clamp(32px,3.6vw,64px); }
+  @keyframes rise { from{opacity:0; transform:translateY(14px)} to{opacity:1; transform:none} }
+  #partial { color:var(--dim); min-height:1.2em; }
+  #partial:not(:empty)::after { content:""; display:inline-block; width:.08em; height:.9em; margin-left:.12em;
+    background:var(--accent); vertical-align:-.08em; animation:blink 1s steps(1) infinite; }
+  @keyframes blink { 50%{opacity:0} }
+  #empty { position:absolute; inset:0; display:grid; place-items:center; color:#3c3d42; font-size:34px; pointer-events:none; }
+  #paused { position:absolute; inset:0; display:none; place-items:center; text-align:center; color:var(--dim); font-size:30px; }
+  #paused b { display:block; color:var(--ink); font-size:44px; font-weight:500; margin-bottom:10px; }
+  body.off #stage { opacity:0; } body.off #paused { display:grid; } body.off #empty { display:none; }
+  #recap { position:fixed; inset:0; background:rgba(10,11,15,.94); display:none; flex-direction:column;
+    justify-content:center; padding:0 10vw; backdrop-filter:blur(6px); }
+  #recap.on { display:flex; animation:fade .4s ease; }
+  @keyframes fade { from{opacity:0} to{opacity:1} }
+  #recap .kicker { color:var(--recap); font-size:22px; letter-spacing:.14em; text-transform:uppercase; display:flex; gap:16px; align-items:center; }
+  #recap .text { font-size:clamp(30px,3.2vw,56px); line-height:1.35; margin-top:28px; max-width:1500px; }
+  #recap .sub { color:var(--dim); font-size:22px; margin-top:34px; }
+  .wave { display:flex; gap:5px; align-items:center; height:28px; }
+  .wave i { width:5px; height:8px; border-radius:3px; background:var(--recap); animation:bar 1s ease-in-out infinite; }
+  .wave i:nth-child(2){animation-delay:.1s} .wave i:nth-child(3){animation-delay:.2s} .wave i:nth-child(4){animation-delay:.3s} .wave i:nth-child(5){animation-delay:.4s}
+  @keyframes bar { 50%{height:28px} }
+  .shimmer { display:block; height:22px; border-radius:11px; margin:14px 0; max-width:1100px;
+    background:linear-gradient(90deg,#16181f 0%,#262935 50%,#16181f 100%); background-size:200% 100%; animation:sh 1.4s linear infinite; }
+  @keyframes sh { to{background-position:-200% 0} }
+  #toast { position:fixed; bottom:32px; left:50%; transform:translate(-50%,20px); opacity:0; padding:12px 22px;
+    border-radius:999px; background:#171920; border:1px solid var(--line); font-size:19px; transition:all .3s; }
+  #toast.on { opacity:1; transform:translate(-50%,0); }
+</style>
+</head>
+<body>
+<div id="meter"></div>
+<header>
+  <div class="brand"><div class="mark">S</div><b>SpeakEasy</b><span>· live captions</span></div>
+  <div class="pill"><span class="dot"></span><span id="stateLabel">Fresh voice</span></div>
+  <div class="right"><span id="cc">CC on</span><span id="clock"></span></div>
+</header>
+<div id="empty">Start speaking. Captions appear here.</div>
+<div id="stage"><div id="lines"></div><div id="partial" class="line"></div></div>
+<div id="paused"><div><b>Captions paused</b>Tap the pad to bring them back</div></div>
+<div id="recap">
+  <div class="kicker"><div class="wave"><i></i><i></i><i></i><i></i><i></i></div><span id="recapKicker">End-of-class recap</span></div>
+  <div class="text" id="recapText"></div>
+  <div class="sub">Read in his own voice</div>
+</div>
+<div id="toast"></div>
+<script>
+const $ = id => document.getElementById(id);
+const STATES = { fresh:["Fresh voice","--fresh"], tiring:["Voice tiring","--tiring"], recap_ready:["Recap ready","--recap"] };
+const lines = [];
+function esc(s){ return s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+function render(){
+  $("empty").style.display = lines.length ? "none" : "grid";
+  $("lines").innerHTML = lines.map((t,i) => {
+    const age = lines.length - 1 - i; return `<div class="line ${age===2?'old2':age===1?'old1':''}">${esc(t)}</div>`;
+  }).join("");
+}
+function setState(s){
+  const [label, v] = STATES[s] || STATES.fresh;
+  document.documentElement.style.setProperty("--accent", `var(${v})`);
+  $("stateLabel").textContent = label;
+}
+function setFatigue(f){ $("meter").style.width = Math.max(6, Math.min(100, (f||0)*100)) + "%"; }
+function setCaptions(on){ document.body.classList.toggle("off", !on); $("cc").textContent = on ? "CC on" : "CC off"; }
+let toastT; function toast(msg){ const t=$("toast"); t.textContent=msg; t.classList.add("on"); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove("on"),1600); }
+setInterval(()=>{ $("clock").textContent = new Date().toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}); }, 1000);
+
+const es = new EventSource("/stream");
+es.addEventListener("hello", e => { const s=JSON.parse(e.data); setCaptions(s.captions_on); setState(s.state); setFatigue(s.fatigue);
+  (s.transcript||[]).slice(-3).forEach(x => lines.push(x.text)); render(); });
+es.addEventListener("partial", e => { $("partial").textContent = JSON.parse(e.data).text; $("empty").style.display="none"; });
+es.addEventListener("final", e => { const t=JSON.parse(e.data).text; if(!t) return; lines.push(t); while(lines.length>3) lines.shift(); $("partial").textContent=""; render(); });
+es.addEventListener("captions", e => setCaptions(JSON.parse(e.data).on));
+es.addEventListener("state", e => setState(JSON.parse(e.data).state));
+es.addEventListener("metrics", e => setFatigue(JSON.parse(e.data).fatigue));
+es.addEventListener("touch", e => { const d=JSON.parse(e.data); toast(d.kind==="hold" ? "Recap requested" : "Tap"); });
+es.addEventListener("recap", e => {
+  const d=JSON.parse(e.data), r=$("recap");
+  if (d.phase==="generating"){ $("recapKicker").textContent="Preparing recap"; $("recapText").innerHTML='<span class="shimmer"></span><span class="shimmer" style="max-width:900px"></span><span class="shimmer" style="max-width:700px"></span>'; r.classList.add("on"); }
+  else if (d.phase==="playing"){ $("recapKicker").textContent="End-of-class recap"; $("recapText").textContent=d.text||""; r.classList.add("on"); }
+  else setTimeout(()=>r.classList.remove("on"), d.phase==="done" ? 2500 : 0);
+});
+es.addEventListener("reset", () => { lines.length=0; render(); $("partial").textContent=""; setCaptions(true); setFatigue(0); });
+</script>
+</body>
+</html>
