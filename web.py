@@ -23,7 +23,7 @@ def _broadcast(event, data):
 def _snapshot():
     try:
         import hub
-        STATE["arduino"] = getattr(hub, "_ser", None) is not None
+        STATE["arduino"] = hub.is_connected() if hasattr(hub, "is_connected") else getattr(hub, "_ser", None) is not None
     except Exception:
         STATE["arduino"] = False
     try:
