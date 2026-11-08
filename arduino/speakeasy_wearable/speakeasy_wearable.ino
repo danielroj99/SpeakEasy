@@ -37,6 +37,7 @@ struct Lcd {
 };
 
 const int TOUCH_PIN = 2;
+const int VIBE_PIN = 3;      // optional Grove vibration motor in port D3 (idea from Yasmin's pod sketch)
 const unsigned long TAP_MAX_MS = 600, HOLD_MS = 1200;
 
 Lcd lcd;
@@ -45,6 +46,8 @@ bool captionsOn = true;
 bool lastTouch = false, holdSent = false;
 unsigned long pressT = 0, lastAcc = 0, lastBlink = 0;
 bool blinkOn = false;
+
+void buzz(int ms) { digitalWrite(VIBE_PIN, HIGH); delay(ms); digitalWrite(VIBE_PIN, LOW); }
 
 void setColor() {
   if (state == "tiring")           lcd.setRGB(255, 140, 0);
@@ -65,13 +68,18 @@ bool recapActive() { return recapPhase == "generating" || recapPhase == "playing
 
 void handle(String line) {
   line.trim();
-  if (line.startsWith("STATE ")) { state = line.substring(6); if (!recapActive()) show(); }
+  if (line.startsWith("STATE ")) {
+    String s = line.substring(6);
+    if (s == "tiring" && state != "tiring") buzz(150);   // private nudge when his voice starts tiring
+    state = s;
+    if (!recapActive()) show();
+  }
   else if (line.startsWith("CAP ")) { captionsOn = line.substring(4) == "1"; if (!recapActive()) show(); }
   else if (line.startsWith("RECAP ")) {
     recapPhase = line.substring(6);
     if (recapActive()) {
       lcd.clear(); lcd.setCursor(0, 0); lcd.print("RECAP");
-      lcd.setCursor(0, 1); lcd.print(recapPhase == "generating" ? "preparing" : "playing");
+      lcd.setCursor(0, 1); lcd.print(recapPhase == "generating" ? "making recap..." : "recap playing");
     } else show();
   }
 }
@@ -79,6 +87,8 @@ void handle(String line) {
 void setup() {
   Serial.begin(115200);
   pinMode(TOUCH_PIN, INPUT);
+  pinMode(VIBE_PIN, OUTPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
   Wire.begin();
   lcd.begin();
   CurieIMU.begin();
@@ -93,7 +103,7 @@ void loop() {
   // touch: tap vs hold
   bool t = digitalRead(TOUCH_PIN) == HIGH;
   if (t && !lastTouch) { pressT = now; holdSent = false; }
-  if (t && !holdSent && now - pressT >= HOLD_MS) { Serial.println("HOLD"); holdSent = true; }
+  if (t && !holdSent && now - pressT >= HOLD_MS) { Serial.println("HOLD"); holdSent = true; buzz(80); }
   if (!t && lastTouch && !holdSent && now - pressT < TAP_MAX_MS) Serial.println("TAP");
   lastTouch = t;
 
@@ -109,6 +119,8 @@ void loop() {
     blinkOn = !blinkOn; lastBlink = now;
     if (blinkOn) lcd.setRGB(150, 0, 255); else lcd.setRGB(20, 0, 40);
   }
+
+  if (!recapActive()) digitalWrite(LED_BUILTIN, state != "fresh");   // on-board LED mirrors the state
 
   // accelerometer stream (for fall detection later)
   if (now - lastAcc > 500) {
