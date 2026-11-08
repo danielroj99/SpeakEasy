@@ -59,6 +59,13 @@ def _on_tap(_):
     _captions_on = not _captions_on
     _send(f"CAP {1 if _captions_on else 0}")
 def _on_recap(d): _send(f"RECAP {d.get('phase')}")
+def _on_metrics(d):
+    """Once a minute: speaking rate + clarity for the LCD's second line."""
+    wpm = d.get("wpm")
+    if not wpm:
+        return                               # demo button values have no measurements
+    clar = d.get("accuracy") if d.get("accuracy") is not None else d.get("mean_conf")
+    _send(f"METRICS {int(round(wpm))} {int(round((clar or 0) * 100))}")
 
 def start():
     global _ser
@@ -77,3 +84,4 @@ def start():
     bus.subscribe("state.changed", _on_state, inline=True)
     bus.subscribe("touch.tap", _on_tap, inline=True)
     bus.subscribe("recap.status", _on_recap, inline=True)
+    bus.subscribe("metrics.minute", _on_metrics, inline=True)
