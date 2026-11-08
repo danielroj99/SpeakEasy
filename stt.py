@@ -1,4 +1,4 @@
-# stt.py - Vosk speech to text (Yasmin).
+# stt.py - Vosk speech to text
 # In:  audio.frame (bytes)
 # Out: stt.partial {text, ts}            at most 4x per second
 #      stt.final   {text, words:[{word,start,end,conf}], t0, t1}   wall-clock seconds

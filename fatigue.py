@@ -1,17 +1,31 @@
 """fatigue.py - per-minute speech metrics + fatigue score (Daniel).
 
-Runs on the LAPTOP. The Arduino 101 only drives the touch pad / LCD / accelerometer,
-and hub.py (Nihal) relays state.changed to it. This module never touches hardware and
+Runs on the LAPTOP. The Arduino 101 only drives the touch pad / LCD / vibration motor,
+and hub.py relays state.changed to it. This module never touches hardware and
 talks to the rest of the app only through bus.py.
+
+How it decides (set up for the demo):
+  * Calibration: his FIRST MINUTE OF TALKING (the 60 s that start with his first word) is
+    his baseline: words per minute + Vosk confidence. A minute with under 30 s of talking
+    (a mic check, a few words) does not count: the calibration minute starts again at his
+    next phrase. The baseline is kept in memory only, so every run of app.py calibrates
+    again, and "Reset session" (POST /debug/reset) calibrates again from his next minute.
+  * After that, one score per minute of talking: wpm drop + clarity drop against that
+    baseline, smoothed -> fresh / tiring / recap_ready. Going up, the state moves one step
+    per minute, so amber (and the armband's "tiring" buzz) always comes before purple.
+  * The time of day is NOT used: no "after 2:30 PM" rule, no reset at midnight, no
+    baseline reused from an earlier run or from baseline.json. Minutes are counted from his
+    first word, not from the clock. (day_part "am"/"pm" is still written to each minute,
+    only as a label for the database; it never changes the state.)
 
 Subscribes
   stt.final      {text, words: [{word, start, end, conf}], t0, t1}   t0/t1 = wall-clock s
-  recap.status   {phase, ...}     on phase "done" the late-day recap counter restarts
-  debug.fatigue  {level: float}   ASSUMED topic behind POST /debug/fatigue (agree with Yasmin)
-  debug.reset    None             ASSUMED topic behind POST /debug/reset   (agree with Yasmin)
+  debug.fatigue  {level: float}   demo buttons (POST /debug/fatigue): adopts the level as the score
+  debug.reset    None             "Reset session" (POST /debug/reset): score 0, fresh, calibrate again
 Publishes
-  metrics.minute {ts, wpm, mean_conf, pause_ratio, n_words, fatigue, state,
-                  mode, accuracy, ms_per_syll, day_part}
+  metrics.minute {ts, wpm, mean_conf, pause_ratio, n_words, fatigue, state, mode, accuracy,
+                  ms_per_syll, day_part, baseline_wpm, baseline_conf}
+                 one per minute of talking (15+ words); store.py saves it
   state.changed  {state}          "fresh" | "tiring" | "recap_ready"
 
 Two modes (config.FATIGUE_MODE):
@@ -27,14 +41,12 @@ records every stt.final so you can replay real Vosk output later.
 
 Test without hardware:
   python fatigue.py --replay finals.jsonl                      (one stt.final per line)
-  python fatigue.py --replay morning.jsonl --make-baseline     (fixed baseline for the demo)
 """
 import json
 import re
 import threading
 import time
 from datetime import datetime
-from datetime import time as dtime
 from statistics import mean, median
 
 try:
@@ -114,7 +126,7 @@ def _cfg(name, default):
     return getattr(config, name, default) if config is not None else default
 
 
-# Hamilton time, explicitly: the laptop running app.py may be set to another zone.
+# Hamilton time, ONLY for the "am"/"pm" label of each minute (never for the state).
 TZ_NAME = _cfg("TZ_NAME", "America/Toronto")
 try:
     from zoneinfo import ZoneInfo
@@ -124,48 +136,51 @@ except Exception:  # Windows needs `pip install tzdata`; falls back to the lapto
     print(f"fatigue.py: no time-zone data for {TZ_NAME}; using the laptop's local time "
           "(on Windows: pip install tzdata)")
 
-BASELINE_FILE = _cfg("BASELINE_FILE", "baseline.json")
-BASELINE_MINUTES = _cfg("BASELINE_MINUTES", 5)          # spec: first 5 talking minutes
+WINDOW_S = 60.0                                         # one score per minute of talking
+# Demo: the baseline is his FIRST minute of talking. config.BASELINE_MINUTES,
+# LATE_RECAP_TIME and BASELINE_FILE are not used by this file any more.
+CALIBRATION_MINUTES = _cfg("FATIGUE_CALIBRATION_MINUTES", 1)
+CALIBRATION_MIN_TALK_S = 30.0   # a calibration minute needs 30+ s of him talking; otherwise
+                                # (a mic check, a few words) it restarts at his next phrase
 MIN_WORDS = _cfg("MIN_WORDS_PER_MINUTE", 15)            # spec: skip minutes under 15 words
 WPM_FULL_DROP = _cfg("WPM_FULL_DROP", 0.28)             # case: 165 -> 118 wpm
 CLARITY_FULL_DROP = _cfg("CLARITY_FULL_DROP", 0.07)     # case: 98 -> 91 % intelligibility
 SMOOTH_PREV = _cfg("FATIGUE_SMOOTH_PREV", 0.6)          # spec: 0.6 * prev + 0.4 * raw
 TIRING_AT = _cfg("TIRING_AT", 0.35)
 RECAP_AT = _cfg("RECAP_AT", 0.70)
-LATE_RECAP_TIME = _cfg("LATE_RECAP_TIME", "14:30")      # spec: after 2:30 PM ...
-LATE_RECAP_MIN_MINUTES = _cfg("LATE_RECAP_MIN_MINUTES", 10)  # ... with 10+ minutes of transcript
 AGREE_MINUTES = _cfg("STATE_AGREE_MINUTES", 2)          # spec: 2 minutes in a row agree
 PASSAGE_TEXT = _cfg("PASSAGE_TEXT", None)
 FINALS_LOG = _cfg("FINALS_LOG", None)   # e.g. "finals.jsonl": saves every stt.final for --replay
 MODE = _cfg("FATIGUE_MODE", "passage" if PASSAGE_TEXT else "class")
 CLOSE_GRACE_S = 5.0                                     # wait for late finals before closing
 LEVEL = {"fresh": 0, "tiring": 1, "recap_ready": 2}
+STATES = ["fresh", "tiring", "recap_ready"]
 PASSAGE_MIN_TOKENS = 300                                # tile short passages (> 1 min of reading)
 
 
 class FatigueTracker:
-    def __init__(self, publish, mode=MODE, passage_text=PASSAGE_TEXT,
-                 baseline_file=BASELINE_FILE, tz=TZ, collect_only=False):
+    def __init__(self, publish, mode=MODE, passage_text=PASSAGE_TEXT, tz=TZ):
         self.publish = publish
         self.mode = mode
         self.tz = tz
-        self.baseline_file = baseline_file
-        self.collect_only = collect_only
         self.lock = threading.RLock()
         self.ref = self._tile(passage_text) if passage_text else None
         if self.mode == "passage" and not self.ref:
             # never crash app.py (captions must keep running): fall back to class mode
             print("fatigue.py: passage mode without PASSAGE_TEXT -> using class mode")
             self.mode = "class"
-        self.minute = None
+        self.state = "fresh"
+        self._new_session()
+
+    def _new_session(self):
+        """Forget the baseline and the score: calibrate from his next minute of talking."""
+        self.t_start = None      # his first word; minutes are counted from here
+        self.minute = None       # index of the open minute (0 = his first minute)
         self.finals = []
         self.fatigue = 0.0
-        self.state = "fresh"
         self.candidates = []
-        self.minutes_since_recap = 0
-        self.day = None
-        self.collect = []
-        self.baseline = self._load_baseline()
+        self.collect = []        # minutes collected for the calibration
+        self.base = None         # {"wpm", "conf", "acc"?} from his first minute of talking
 
     # ---------- bus handlers ----------
     def on_final(self, ev):
@@ -175,99 +190,101 @@ class FatigueTracker:
             return
         t0 = ev.get("t0", words[0]["start"])
         t1 = ev.get("t1", words[-1]["end"])
-        m = int(t1 // 60)
         with self.lock:
-            if self.minute is not None and m > self.minute:
-                self._close_minute()
-            if self.minute is None or m > self.minute:
-                self.minute = m
+            if self.minute is not None and self._index(t1) > self.minute:
+                self._close_minute()                  # (may restart the calibration minute)
+            if self.t_start is None:
+                self.t_start = t0                     # his first minute starts here
+            if self.minute is None:
+                self.minute = self._index(t1)
             self.finals.append({"t0": t0, "t1": t1, "words": words})
 
+    def _index(self, t):
+        """Which minute of his talking t falls in (0 = his first minute)."""
+        return int(max(0.0, t - self.t_start) // WINDOW_S)
+
     def tick(self, now=None):
-        """Called every few seconds: closes the minute once he stops talking."""
+        """Called every few seconds: closes the minute once it is over (+ a short grace)."""
         now = time.time() if now is None else now
         with self.lock:
-            if self.minute is not None and now >= (self.minute + 1) * 60 + CLOSE_GRACE_S:
+            if (self.minute is not None
+                    and now >= self.t_start + (self.minute + 1) * WINDOW_S + CLOSE_GRACE_S):
                 self.flush()
 
     def flush(self):
         with self.lock:
             self._close_minute()
-            self.minute = None
-
-    def on_recap_status(self, data):
-        if (data or {}).get("phase") != "done":
-            return
-        with self.lock:
-            self.minutes_since_recap = 0
-            self.candidates = []
-            cand = self._candidate(late_ok=False)
-            self._set_state(cand)
 
     def on_debug_fatigue(self, data):
         level = float((data or {}).get("level", 0.0))
         with self.lock:
             self.fatigue = level
-            cand = self._candidate(late_ok=False)
+            cand = self._candidate()
             self.candidates = [cand] * AGREE_MINUTES
             self._set_state(cand)
 
     def on_debug_reset(self, _data=None):
         with self.lock:
-            self.fatigue = 0.0
-            self.candidates = []
-            self.minutes_since_recap = 0
+            self._new_session()
             self._set_state("fresh")
+        print("[fatigue] reset: calibrating again from his next minute of talking")
 
     # ---------- core ----------
     def _close_minute(self):
         finals, self.finals = self.finals, []
-        if not finals or self.minute is None:
+        index, self.minute = self.minute, None
+        if not finals or index is None:
             return
-        ts = (self.minute + 1) * 60
-        local = self._local(ts)
-        today = local.date().isoformat()
-        if today != self.day:
-            self._new_day(today)
+        ts = self.t_start + (index + 1) * WINDOW_S            # end of this minute
 
         words = [w for f in finals for w in f["words"]]
         n = len(words)
         speaking = sum(max(0.0, f["t1"] - f["t0"]) for f in finals)
+        if self.base is None and (n < MIN_WORDS or speaking < CALIBRATION_MIN_TALK_S):
+            # not a real minute of talking yet: his first minute starts at his next phrase
+            print(f"[fatigue] calibration: only {speaking:.0f} s of talking in that minute, "
+                  f"starting the calibration minute again at his next phrase")
+            self.t_start = None
+            return
         if n < MIN_WORDS or speaking <= 0:
             return                                   # he isn't talking: skip the minute
 
         wpm = n / (speaking / 60.0)
         conf = mean(float(w.get("conf", 0.0)) for w in words)
-        pause_ratio = max(0.0, 1.0 - speaking / 60.0)
+        pause_ratio = max(0.0, 1.0 - speaking / WINDOW_S)
         art = sum(max(0.0, w["end"] - w["start"]) for w in words)
         syl = sum(syllables(w["word"]) for w in words)
         ms_per_syll = 1000.0 * art / syl if syl else None   # logged, not scored yet
         acc = self._accuracy(words) if self.mode == "passage" else None
         minute = {"wpm": wpm, "conf": conf, "acc": acc}
 
-        self.minutes_since_recap += 1
-        base = None if self.collect_only else self._base(today)
-        if base is None:
+        if self.base is None:                        # calibrating on his first minute
             self.collect.append(minute)
-            if not self.collect_only and len(self.collect) >= BASELINE_MINUTES:
-                self._save_baseline(today)
+            if len(self.collect) >= CALIBRATION_MINUTES:
+                self.base = self._medians()
+                self.collect = []
+                extra = "" if "acc" not in self.base else f", accuracy {self.base['acc']:.2f}"
+                print(f"[fatigue] calibrated on his first minute of talking: "
+                      f"{self.base['wpm']:.0f} wpm, conf {self.base['conf']:.2f}{extra}")
         else:
-            raw = self._raw(minute, base)
+            raw = self._raw(minute, self.base)
             self.fatigue = SMOOTH_PREV * self.fatigue + (1.0 - SMOOTH_PREV) * raw
 
-        cand = self._candidate(late_ok=True, local=local)
+        cand = self._candidate()
         self.candidates = (self.candidates + [cand])[-AGREE_MINUTES:]
         if len(self.candidates) == AGREE_MINUTES:
             # Spec: change only after 2 minutes in a row agree. Read as "agree on the
-            # direction": if both minutes are above the current state, move to the lower of
-            # the two (so a fast rise still shows amber before purple); same going down.
+            # direction". Going up it moves ONE step per minute, so amber (and the armband's
+            # "tiring" buzz) always comes before purple, even with config.py's 1-minute demo
+            # value; going down it moves to the higher of the minutes' states.
             cur = LEVEL[self.state]
             levels = [LEVEL[c] for c in self.candidates]
             if all(lv > cur for lv in levels):
-                self._set_state(min(self.candidates, key=LEVEL.get))
+                self._set_state(STATES[cur + 1])
             elif all(lv < cur for lv in levels):
                 self._set_state(max(self.candidates, key=LEVEL.get))
 
+        local = self._local(ts)
         self.publish("metrics.minute", {
             "ts": ts, "wpm": round(wpm, 1), "mean_conf": round(conf, 3),
             "pause_ratio": round(pause_ratio, 3), "n_words": n,
@@ -275,7 +292,10 @@ class FatigueTracker:
             "mode": self.mode,
             "accuracy": None if acc is None else round(acc, 3),
             "ms_per_syll": None if ms_per_syll is None else round(ms_per_syll, 1),
-            "day_part": "am" if local.hour < 12 else "pm",
+            "day_part": "am" if local.hour < 12 else "pm",   # database label only
+            # for the control panel ("X wpm (baseline Y)"); store.py ignores these two
+            "baseline_wpm": None if self.base is None else round(self.base["wpm"], 1),
+            "baseline_conf": None if self.base is None else round(self.base["conf"], 3),
         })
 
     def _raw(self, m, base):
@@ -297,44 +317,16 @@ class FatigueTracker:
         acc = align_segment(self.ref, hyp)["accuracy"]
         return 0.0 if acc is None else acc
 
-    def _candidate(self, late_ok, local=None):
+    def _candidate(self):
+        """The voice only: no time-of-day rule."""
         if self.fatigue >= RECAP_AT:
             return "recap_ready"
-        if late_ok and local is not None:
-            hh, mm = (int(x) for x in LATE_RECAP_TIME.split(":"))
-            if local.time() >= dtime(hh, mm) and self.minutes_since_recap >= LATE_RECAP_MIN_MINUTES:
-                return "recap_ready"
         return "tiring" if self.fatigue >= TIRING_AT else "fresh"
 
     def _set_state(self, cand):
         if cand != self.state:
             self.state = cand
             self.publish("state.changed", {"state": cand})
-
-    # ---------- days and baseline ----------
-    def _local(self, ts):
-        return datetime.fromtimestamp(ts, self.tz) if self.tz else datetime.fromtimestamp(ts)
-
-    def _new_day(self, today):
-        self.day = today
-        self.fatigue = 0.0
-        self.candidates = []
-        self.minutes_since_recap = 0
-        self.collect = []
-        self._set_state("fresh")
-
-    def _base(self, today):
-        b = self.baseline
-        if b.get("fixed") or b.get("date") == today:
-            return b.get(self.mode)
-        return None
-
-    def _load_baseline(self):
-        try:
-            with open(self.baseline_file) as f:
-                return json.load(f)
-        except (OSError, ValueError):
-            return {}
 
     def _medians(self):
         b = {"wpm": median(m["wpm"] for m in self.collect),
@@ -345,18 +337,8 @@ class FatigueTracker:
             b["acc"] = median(accs)
         return b
 
-    def _save_baseline(self, today, fixed=False):
-        keep = self.baseline.get("fixed") or self.baseline.get("date") == today
-        data = dict(self.baseline) if keep else {}
-        data.update({"date": today, "fixed": fixed or data.get("fixed", False),
-                     self.mode: self._medians()})
-        self.baseline = data
-        try:
-            with open(self.baseline_file, "w") as f:
-                json.dump(data, f, indent=2)
-        except OSError:
-            pass
-        self.collect = []
+    def _local(self, ts):
+        return datetime.fromtimestamp(ts, self.tz) if self.tz else datetime.fromtimestamp(ts)
 
     @staticmethod
     def _tile(text):
@@ -376,11 +358,10 @@ def start():
     global _tracker
     _tracker = FatigueTracker(bus.publish)
     bus.subscribe("stt.final", _tracker.on_final)
-    bus.subscribe("recap.status", _tracker.on_recap_status)
     bus.subscribe("debug.fatigue", _tracker.on_debug_fatigue)
     bus.subscribe("debug.reset", _tracker.on_debug_reset)
 
-    if FINALS_LOG:  # record real Vosk output to replay it later (--replay / --make-baseline)
+    if FINALS_LOG:  # record real Vosk output to replay it later (--replay)
         log_lock = threading.Lock()
 
         def _log_final(ev):
@@ -395,6 +376,9 @@ def start():
             _tracker.tick()
 
     threading.Thread(target=_ticker, daemon=True).start()
+    print(f"[fatigue] {_tracker.mode} mode: calibrates on his first {CALIBRATION_MINUTES} min "
+          f"of talking, then one score per minute; state changes after {AGREE_MINUTES} min, "
+          f"smoothing {SMOOTH_PREV}; time of day not used")
     return _tracker
 
 
@@ -405,8 +389,6 @@ if __name__ == "__main__":
     ap.add_argument("--replay", required=True, help="file with one stt.final payload per line")
     ap.add_argument("--mode", choices=["class", "passage"], default=MODE)
     ap.add_argument("--passage", help="text file with the passage (passage mode)")
-    ap.add_argument("--make-baseline", action="store_true",
-                    help="save this recording's medians as a fixed baseline.json for the demo")
     args = ap.parse_args()
 
     passage = PASSAGE_TEXT
@@ -414,15 +396,9 @@ if __name__ == "__main__":
         with open(args.passage, encoding="utf-8") as f:
             passage = f.read()
     tracker = FatigueTracker(lambda topic, data: print(topic, json.dumps(data)),
-                             mode=args.mode, passage_text=passage,
-                             collect_only=args.make_baseline)
+                             mode=args.mode, passage_text=passage)
     with open(args.replay, encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 tracker.on_final(json.loads(line))
     tracker.flush()
-    if args.make_baseline:
-        if not tracker.collect:
-            raise SystemExit("no talking minutes (15+ words) in the recording")
-        tracker._save_baseline(tracker.day, fixed=True)
-        print("fixed baseline saved:", json.dumps(tracker.baseline[args.mode]))

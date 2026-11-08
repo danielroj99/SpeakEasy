@@ -1,13 +1,13 @@
 """store.py - local storage (SQLite) + metrics sync to Tiger Data.
 
-Spec: "store.py (Daniel schema, Nihal wiring)". This file has both, so app.py only calls
+Spec: "store.py". This file has both, so app.py only calls
 store.start(). Runs on the LAPTOP (the Arduino 101 replaced the Raspberry Pi).
 
 Subscribes
   stt.final       -> finals(t0, t1, text, mean_conf)      the transcript never leaves the laptop
   metrics.minute  -> metrics(..., synced = 0)
   debug.reset     -> deletes today's finals (spec: "clears today's transcript"). ASSUMED topic
-                     name, the same one fatigue.py listens to; agree it with Yasmin (web.py).
+                     name, the same one fatigue.py listens to; (web.py).
 Functions other modules may call (spec)
   store.transcript_since(ts) -> str          recap.py
   store.metrics_today()      -> list[dict]

@@ -61,7 +61,7 @@
     <span class="chip" id="chipArduino"><i></i>Armband</span>
     <span class="chip" id="chipMic"><i></i>Mic</span>
     <span class="chip" id="chipVoice"><i></i>Voice</span>
-    <a class="chip" href="/" target="_blank">Open captions screen ↗</a>
+    <a class="chip" href="/">Captions screen</a>
   </div>
 </header>
 <main>
@@ -106,6 +106,7 @@
     <div class="row" style="margin-top:8px"><span id="recapPhase">idle</span></div>
     <div class="btns">
       <button class="primary" onclick="post('/debug/hold')">Play recap</button>
+      <button onclick="post('/api/new_class').then(()=>{ $('recapText').textContent='New class started. The next recap only covers what is said from now on.'; })">New class</button>
       <input id="rt" placeholder="Or type a line to say in the cloned voice">
       <button onclick="post('/debug/recap_text',{text:val('rt')})">Say it</button>
     </div>

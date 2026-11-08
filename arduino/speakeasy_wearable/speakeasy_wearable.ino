@@ -37,7 +37,7 @@ struct Lcd {
 };
 
 const int TOUCH_PIN = 2;
-const int VIBE_PIN = 3;      // optional Grove vibration motor in port D3 (idea from Yasmin's pod sketch)
+const int VIBE_PIN = 3;      // optional Grove vibration motor in port D3
 const unsigned long TAP_MAX_MS = 600, HOLD_MS = 1200;
 
 Lcd lcd;

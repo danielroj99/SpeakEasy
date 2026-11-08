@@ -1,4 +1,4 @@
-# voicebank.py - passive voice banking (Yasmin).
+# voicebank.py - passive voice banking
 # While fresh (and before noon unless DEMO_MODE), keeps clean stt.final segments
 # (mean conf >= 0.85, >= 3 s), cut from a rolling 60 s audio buffer, saved to bank/.
 #   python voicebank.py --status    how much clean audio is banked
@@ -49,6 +49,9 @@ def _on_final(d):
     secs = banked_seconds()
     print(f"[voicebank] saved {path} ({t1-t0:.1f} s, conf {conf:.2f}) total {secs:.0f} s")
     publish_status()
+    if secs >= config.BANK_TARGET_SECONDS and _phase == "idle" and not os.getenv("ELEVEN_VOICE_ID"):
+        print(f"[voicebank] {secs:.0f} s banked, cloning {_speaker}'s voice automatically")
+        upload_async()
 
 def _write_wav(path, pcm):
     with wave.open(path, "wb") as w:
@@ -142,6 +145,30 @@ def upload_async():
             _phase, _error = "error", str(e)
         publish_status()
     threading.Thread(target=run, daemon=True).start()
+
+def ensure_clone(min_seconds=20, wait_s=45):
+    """Called right before a recap: make sure the newest speaker has a clone.
+    Returns True if a clone of the current speaker exists (creating it now if needed)."""
+    global _phase, _error
+    if os.getenv("ELEVEN_VOICE_ID"):
+        return True
+    t = time.time()
+    while _phase == "uploading" and time.time() - t < wait_s:   # auto-clone already running
+        time.sleep(0.5)
+    if os.getenv("ELEVEN_VOICE_ID"):
+        return True
+    if banked_seconds() < min_seconds:
+        return False
+    print(f"[voicebank] cloning {_speaker}'s voice before the recap...")
+    _phase, _error = "uploading", None; publish_status()
+    try:
+        os.environ["ELEVEN_VOICE_ID"] = upload(f"{_speaker} (SpeakEasy bank)")
+        _phase = "ready"
+    except BaseException as e:
+        _phase, _error = "error", str(e)
+        print("[voicebank] clone failed:", str(e)[:200])
+    publish_status()
+    return bool(os.getenv("ELEVEN_VOICE_ID"))
 
 def start():
     bus.subscribe("audio.frame", _on_frame, inline=True)

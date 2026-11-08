@@ -1,4 +1,4 @@
-# audio.py - STAND-IN for Nihal's module so the software can be tested on a laptop.
+# audio.py - STAND-IN so the software can be tested on a laptop.
 # Publishes audio.frame: 16 kHz mono int16 bytes, 0.1 s chunks.
 # AUDIO_FILE=some.wav in .env replays a recording in real time instead of the mic.
 import threading, time, wave

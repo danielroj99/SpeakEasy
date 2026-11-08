@@ -1,4 +1,4 @@
-# bus.py - tiny in-process event bus (Nihal's design).
+# bus.py - tiny in-process event bus
 # One change: subscribe(..., inline=True) runs the handler in the publisher's
 # thread. Use it for audio.frame so frames stay in order (a new thread per
 # frame can deliver chunks out of order, which garbles Vosk).

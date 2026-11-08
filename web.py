@@ -133,6 +133,12 @@ def dbg_fatigue():
     bus.publish("state.changed", {"state": st})
     return jsonify(ok=True, state=st)
 
+@app.post("/api/new_class")
+def new_class():
+    bus.publish("recap.new_class")
+    _broadcast("newclass", {})
+    return jsonify(ok=True)
+
 @app.post("/debug/tap")
 def dbg_tap():
     _demo(); bus.publish("touch.tap", {"source": "ui"}); return jsonify(ok=True)

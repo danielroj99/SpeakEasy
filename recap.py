@@ -1,4 +1,4 @@
-# recap.py - Gemini summary + ElevenLabs voice + playback (Yasmin).
+# recap.py - Gemini summary + ElevenLabs voice + playback
 # In:  touch.hold, recap.play_text {text}, stt.final, state.changed, debug.reset
 # Out: recap.status {phase: generating|playing|done|error, text?}
 import os, platform, shutil, subprocess, tempfile, threading, time, wave
@@ -6,10 +6,11 @@ import requests
 import bus, config
 
 PROMPT = (
-    "Write the end-of-class recap that Mr. Chen, a high school biology teacher, will play "
-    "to his class in his own voice. Use only the lesson transcript below, which has "
-    "speech-recognition errors, so skip garbled parts. 60 to 90 words, first person, his "
-    "speaking style: the 3 key ideas, key terms, and any homework or reminders he gave. "
+    "Write the end-of-class recap that {teacher}, a high school teacher, will play to the class "
+    "in their own voice. Use only the transcript below. It can be any subject; recap whatever was "
+    "actually taught. It has speech-recognition errors, so skip garbled parts and never invent "
+    "content. 60 to 90 words, first person, natural spoken style: the 3 key ideas, key terms, and "
+    "any homework or reminders. If it isn't a lesson, recap the main points that were discussed. "
     "Plain spoken sentences, no lists.\n\nTranscript:\n"
 )
 NOT_ENOUGH = "There isn't enough from today's lesson to recap yet. Let's keep going."
@@ -18,7 +19,7 @@ _busy = threading.Lock()
 _finals = []                 # fallback transcript if store.py isn't wired yet
 _last_recap_ts = None
 _state = "fresh"
-_draft = {"made": 0.0, "key": None, "text": None, "mp3": None}   # key = _last_recap_ts it was built for
+_draft = {"made": 0.0, "key": None, "text": None, "mp3": None, "words": 0}   # key = _last_recap_ts it was built for
 _tmp = tempfile.mkdtemp(prefix="recap_")
 
 # ---------- building blocks (each testable on its own) ----------
@@ -62,6 +63,17 @@ def _skippable(e):
     t = str(e)
     return any(k in t for k in ("NOT_FOUND", "404", "RESOURCE_EXHAUSTED", "429", "PERMISSION_DENIED", "403"))
 
+def _generate(client, model, contents):
+    """Thinking off: a recap doesn't need it, and it cuts Gemini 2.5 from ~20 s to a few seconds."""
+    try:
+        from google.genai import types
+        cfg = types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_budget=0))
+        return client.models.generate_content(model=model, contents=contents, config=cfg)
+    except Exception as e:
+        if "thinking" not in str(e).lower() and "INVALID_ARGUMENT" not in str(e) and not isinstance(e, (ImportError, AttributeError, TypeError)):
+            raise
+        return client.models.generate_content(model=model, contents=contents)   # model without thinking control
+
 def summarize(transcript):
     global _model
     from google import genai
@@ -69,7 +81,7 @@ def summarize(transcript):
     tried = []
     for model in ([_model] if _model else []) + [m for m in _candidates(client) if m != _model]:
         try:
-            resp = client.models.generate_content(model=model, contents=PROMPT + transcript)
+            resp = _generate(client, model, PROMPT.format(teacher=getattr(config, 'TEACHER_NAME', 'Mr. Chen')) + transcript)
         except Exception as e:
             if not _skippable(e):
                 raise
@@ -83,13 +95,25 @@ def summarize(transcript):
 
 TTS_RATE = 22050
 
+DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb"   # ElevenLabs stock voice, used if the clone is blocked
+
+def _tts_request(text, voice):
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format=pcm_{TTS_RATE}"
+    return requests.post(url, timeout=30,
+                         headers={"xi-api-key": config.ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+                         json={"text": text, "model_id": "eleven_multilingual_v2"})
+
 def tts(text, path):
-    """ElevenLabs -> raw 16-bit PCM -> .wav (plays anywhere without ffmpeg)."""
-    url = (f"https://api.elevenlabs.io/v1/text-to-speech/{config.voice_id()}"
-           f"?output_format=pcm_{TTS_RATE}")
-    r = requests.post(url, timeout=30,
-                      headers={"xi-api-key": config.ELEVENLABS_API_KEY, "Content-Type": "application/json"},
-                      json={"text": text, "model_id": "eleven_multilingual_v2"})
+    """ElevenLabs -> raw 16-bit PCM -> .wav (plays anywhere without ffmpeg).
+    If the cloned voice is blocked (needs verification, deleted), falls back to the stock voice."""
+    voice = config.voice_id()
+    r = _tts_request(text, voice)
+    if r.status_code in (400, 401, 403, 404) and voice != DEFAULT_VOICE and \
+            any(k in r.text for k in ("voice_access_denied", "requires verification", "voice_not_found", "captcha")):
+        print("[recap] the cloned voice is blocked by ElevenLabs (it needs verification on elevenlabs.io), "
+              "using the stock voice for now")
+        bus.publish("recap.voice_blocked", {"voice_id": voice, "detail": r.text[:200]})
+        r = _tts_request(text, DEFAULT_VOICE)
     if r.status_code != 200:
         raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:200]}")
     with wave.open(path, "wb") as w:
@@ -121,17 +145,27 @@ def _status(phase, text=None):
 def _window_start():
     return _last_recap_ts or (time.time() - config.RECAP_LOOKBACK_MIN * 60)
 
+def _use_latest_voice():
+    """Speak in the newest speaker's voice: clone them now if they have enough recordings."""
+    try:
+        import voicebank
+        voicebank.ensure_clone()
+    except Exception as e:
+        print("[recap] could not prepare the speaker's voice:", str(e)[:120])
+
 def _make(text_override=None):
     """Returns (text, mp3_path)."""
     out = os.path.join(_tmp, f"recap_{int(time.time()*1000)}.wav")
+    _use_latest_voice()
     if text_override:
         return text_override, tts(text_override, out)
     since = _window_start()
-    d = _draft
-    if d["mp3"] and d["key"] == _last_recap_ts and time.time() - d["made"] < config.RECAP_DRAFT_EVERY_S + 60:
-        return d["text"], d["mp3"]                       # fast path: background draft
     transcript = transcript_since(since)
     n = len(transcript.split())
+    d = _draft
+    if d["mp3"] and d["key"] == _last_recap_ts and d["words"] == n:
+        print("[recap] using the background draft (nothing new was said since it was made)")
+        return d["text"], d["mp3"]                       # fast path: draft is still up to date
     if n < config.RECAP_MIN_WORDS:
         print(f"[recap] only {n} words since the last recap (need {config.RECAP_MIN_WORDS})")
         return NOT_ENOUGH, tts(NOT_ENOUGH, out)
@@ -151,7 +185,7 @@ def _make(text_override=None):
     print(f"[recap] voice ready in {time.time() - t:.1f} s")
     return text, path
 
-GEMINI_TIMEOUT_S = 25
+GEMINI_TIMEOUT_S = 40
 
 def _with_timeout(fn, *args, seconds=25):
     """Runs fn in a helper thread so a hung network call can't freeze the recap."""
@@ -182,7 +216,7 @@ def run_recap(text_override=None):
         print("[recap] done")
         if not text_override and text != NOT_ENOUGH:
             _last_recap_ts = time.time()
-            _draft.update(mp3=None, text=None, key=None)
+            _draft.update(mp3=None, text=None, key=None, words=0)
         _status("done", text)
     except Exception as e:
         print("[recap] ERROR:", str(e)[:300])
@@ -209,7 +243,8 @@ def _draft_loop():
         try:
             text = summarize(transcript)
             mp3 = tts(text, os.path.join(_tmp, f"draft_{int(time.time())}.wav"))
-            _draft.update(made=time.time(), key=_last_recap_ts, text=text, mp3=mp3)
+            _draft.update(made=time.time(), key=_last_recap_ts, text=text, mp3=mp3,
+                          words=len(transcript.split()))
             print("[recap] draft ready")
         except Exception as e:
             _draft["made"] = time.time()          # wait a full interval before trying again
@@ -220,10 +255,17 @@ def _on_final(d):  _finals.append((d["t0"], d["text"]))
 def _on_state(d):
     global _state
     _state = d["state"]
+def _on_new_class(_):
+    """A new lesson starts: older talk (earlier tests, other lessons) is left out of the next recap."""
+    global _last_recap_ts
+    _last_recap_ts = time.time() - 0.05
+    _draft.update(mp3=None, text=None, key=None, words=0)
+    print("[recap] new class started: the next recap only covers what comes after this")
+
 def _on_reset(_):
     global _last_recap_ts
     _finals.clear(); _last_recap_ts = None
-    _draft.update(made=0.0, key=None, text=None, mp3=None)
+    _draft.update(made=0.0, key=None, text=None, mp3=None, words=0)
 
 def start():
     bus.subscribe("touch.hold", lambda _: run_recap())
@@ -231,6 +273,7 @@ def start():
     bus.subscribe("stt.final", _on_final, inline=True)
     bus.subscribe("state.changed", _on_state, inline=True)
     bus.subscribe("debug.reset", _on_reset, inline=True)
+    bus.subscribe("recap.new_class", _on_new_class, inline=True)
     threading.Thread(target=_draft_loop, daemon=True).start()
 
 if __name__ == "__main__":
